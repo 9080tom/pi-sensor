@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 import bme680
 import time
+import requests
 
 import firebase_admin
 from firebase_admin import credentials, firestore, storage, db
-cred = credentials.Certificate("key.json")
+cred = credentials.Certificate("/home/pi/Desktop/camera-service/key.json")
 firebase_admin.initialize_app(cred, {"databaseURL": "https://safespace-1bdad.firebaseio.com"})
 user_id = "w9X3C5bnoXPHd4dcplSAnVwsYNs1"
 print("""Estimate indoor air quality
@@ -41,9 +42,13 @@ sensor.select_gas_heater_profile(0)
 
 start_time = time.time()
 curr_time = time.time()
-burn_in_time = 10
+
+burn_in_time = 300
+reading_interval = 60
 
 burn_in_data = []
+prev_aqs_reading = 100
+aqs_drop_threshold = 20
 
 try:
     # Collect gas resistance burn-in values, then use the average
@@ -79,6 +84,7 @@ try:
             hum = sensor.data.humidity
             hum_offset = hum - hum_baseline
             temp = sensor.data.temperature
+            pres = sensor.data.pressure
 
             # Calculate hum_score as the distance from the hum_baseline.
             if hum_offset > 0:
@@ -101,16 +107,26 @@ try:
 
             # Calculate air_quality_score.
             air_quality_score = hum_score + gas_score
+            
+            # push notification if low air quality
+            if prev_aqs_reading - air_quality_score > aqs_drop_threshold:
+                print "sending notification"
+                push_tokens = db.reference("users/w9X3C5bnoXPHd4dcplSAnVwsYNs1/pushTokens").get().values()
+    
+                for token in push_tokens:
+                    requests.post(url = "https://exp.host/--/api/v2/push/send", data = {"to":token.encode('ascii','ignore') , "title": "Air Quality Alert", "body": "Air quality is now {0:.2f}%".format(air_quality_score)})
 
-            print('Temperature: {0:.2f} Degrees Gas: {1:.2f} Ohms,humidity: {2:.2f} %RH,air quality: {3:.2f}'.format(
+            print('Temperature: {0:.2f} Air Pressure: {1:.2f} Degrees Gas: {2:.2f} Ohms,humidity: {3:.2f} %RH,air quality: {4:.2f}'.format(
                 temp,
+                pres,
                 gas,
                 hum,
                 air_quality_score))
             ref = db.reference("users/{}/sensordata".format(user_id))
-            ref.push({"temp": temp, "gas": gas, "hum": hum, "aqs": air_quality_score, "time": time.time()})
+            ref.push({"temp": temp, "gas": gas, "hum": hum, "pres": pres, "aqs": air_quality_score, "time": time.time()})
 
-            time.sleep(10)
+            prev_aqs_reading = air_quality_score
+            time.sleep(reading_interval)
 
 except KeyboardInterrupt:
     pass

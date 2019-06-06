@@ -22,11 +22,12 @@ import requests
 import subprocess
 import firebase_admin
 from firebase_admin import credentials, firestore, storage, db
+from google.cloud import storage
+
+device_id = "pi1"
 
 cred = credentials.Certificate("/home/pi/Desktop/camera-service/key.json")
 firebase_admin.initialize_app(cred, {"storageBucket": "safespace-1bdad.appspot.com", "databaseURL": "https://safespace-1bdad.firebaseio.com"})
-    
-from google.cloud import storage
 
 if not os.path.exists('/home/pi/Desktop/camera-service/settings.py'):
     print("ERROR : File Not Found - settings.py")
@@ -47,6 +48,13 @@ SCRIPT_DIR = SCRIPT_PATH[0:SCRIPT_PATH.rfind("/")+1] # get script directory
 # conversion from stream coordinate to full image coordinate
 X_MO_CONV = imageWidth/float(streamWidth)
 Y_MO_CONV = imageHeight/float(streamHeight)
+
+
+
+#------------------------------------------------------------------------------
+def get_user_id(device_id):
+    
+    return db.reference("devices/{}/users".format(device_id)).get().values()[0].encode('ascii','ignore')
 
 #------------------------------------------------------------------------------
 def get_now():
@@ -138,16 +146,16 @@ def save_video(image_path):
     with picamera.PiCamera() as camera:
         camera.resolution = (640, 480)
         camera.start_recording(image_path)
-        camera.wait_recording(5)
+        camera.wait_recording(30)
         camera.stop_recording()
         subprocess.call(['ffmpeg','-i',image_path,'-c','copy','{}.mp4'.format(image_path)])
-    firebase(image_path + '.mp4','w9X3C5bnoXPHd4dcplSAnVwsYNs1')
+    firebase(image_path + '.mp4')
         
         
 #------------------------------------------------------------------------------
 
 
-def firebase(image_path,user_id):
+def firebase(image_path):
     # upload to storage
     client = storage.Client.from_service_account_json('/home/pi/Desktop/camera-service/key.json')
     bucket = client.get_bucket("safespace-1bdad.appspot.com")
@@ -156,8 +164,12 @@ def firebase(image_path,user_id):
     # add to database
     ref = db.reference("users/{}/videos".format(user_id))
     ref.push(image_path)
-    # send notification
-    requests.post(url = "https://exp.host/--/api/v2/push/send", data = {"to": "ExponentPushToken[92Fj8oKMlp66XPkYSwCFGi]", "title": "Movement Detected", "body": "New video has been uploaded"})
+    # send notifications
+    push_tokens_lookup = db.reference("users/{}/pushTokens".format(user_id)).get()
+    if push_tokens_lookup:
+        push_tokens = push_tokens_lookup.values()
+        for token in push_tokens:
+            requests.post(url = "https://exp.host/--/api/v2/push/send", data = {"to":token.encode('ascii','ignore') , "title": "Movement Detected", "body": "New video has been uploaded"})
 
     
     
@@ -218,8 +230,9 @@ def do_motion_detection():
                      imageWidth, imageHeight,))
 
 # Start Main Program Logic
-time.sleep(100)
+
 if __name__ == '__main__':
+    user_id = get_user_id(device_id)
     print("%s %s  written by Claude Pageau" % (PROG_NAME, PROG_VER))
     print("---------------------------------------------")
     check_image_dir(imagePath)
